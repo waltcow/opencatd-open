@@ -22,7 +22,7 @@ services:
     ports:
       - 80:80
     volumes:
-      - /etc/opencatd:/app/db
+      - /etc/opencatd:/db
     
 ```
 or
