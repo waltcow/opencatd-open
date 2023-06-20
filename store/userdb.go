@@ -2,11 +2,14 @@ package store
 
 import (
 	"time"
+
+	"gorm.io/gorm"
 )
 
 type User struct {
+	gorm.Model
 	IsDelete  bool      `gorm:"default:false" json:"IsDelete"`
-	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id,omitempty"`
+	ID        uint      `gorm:"primarykey autoIncrement;" json:"id,omitempty"`
 	Name      string    `gorm:"unique;not null" json:"name,omitempty"`
 	Token     string    `gorm:"unique;not null" json:"token,omitempty"`
 	CreatedAt time.Time `json:"createdAt,omitempty"`
@@ -67,6 +70,15 @@ func GetUserByID(id uint) (*User, error) {
 func GetUserByName(name string) (*User, error) {
 	var user User
 	result := db.Where(&User{Name: name}).First(&user)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &user, nil
+}
+
+func GetUserByToken(token string) (*User, error) {
+	var user User
+	result := db.Where("token = ?", token).First(&user)
 	if result.Error != nil {
 		return nil, result.Error
 	}

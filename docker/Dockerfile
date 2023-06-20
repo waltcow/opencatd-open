@@ -3,7 +3,7 @@ WORKDIR /frontend-build
 COPY ./web/ .
 RUN npm install && npm run build && rm -rf node_modules 
 
-FROM golang:1.19.7-alpine as builder
+FROM golang:1.19-alpine as builder
 LABEL anther="github.com/Sakurasan"
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && apk --no-cache add make cmake upx 
 WORKDIR /build
@@ -17,7 +17,7 @@ RUN make build
 FROM alpine:latest AS runner
 # 设置alpine 时间为上海时间
 RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && apk update && apk --no-cache add tzdata && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
-    && echo "Asia/Shanghai" > /etc/timezone \
+    && echo "Asia/Shanghai" > /etc/timezone 
 # RUN apk update && apk --no-cache add openssl libgcc libstdc++ binutils
 WORKDIR /app
 COPY --from=builder /build/bin/opencatd /app/opencatd

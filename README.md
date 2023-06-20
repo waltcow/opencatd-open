@@ -1,10 +1,23 @@
 # opencatd-open
+
 <a title="Docker Image CI" target="_blank" href="https://github.com/mirrors2/opencatd-open/actions"><img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/mirrors2/opencatd-open/ci.yaml?label=Actions&logo=github&style=flat-square"></a>
 <a title="Docker Pulls" target="_blank" href="https://hub.docker.com/r/mirrors2/opencatd-open"><img src="https://img.shields.io/docker/pulls/mirrors2/opencatd-open.svg?logo=docker&label=docker&style=flat-square"></a>
 
+opencatd-open is an open-source, team-shared service for ChatGPT API that can be safely shared with others for API usage.
+
+---
 OpenCat for Team的开源实现
 
-基本实现了opencatd的全部功能
+~~基本~~实现了opencatd的全部功能
+
+## Extra Support:
+
+| 任务 | 完成情况 |
+| --- | --- |
+|[Azure OpenAI](./doc/azure.md) | ✅|
+| ... | ... |
+
+
 
 ## 快速上手
 ```
@@ -50,6 +63,14 @@ wget https://github.com/mirrors2/opencatd-open/raw/main/docker/docker-compose.ym
   - [Fly.io](https://fly.io/)
   - 或者其他
 
+修改openai的endpoint地址？使用任意上游地址(套娃代理)
+  - 设置环境变量 openai_endpoint
+
+使用Nginx + Docker部署
+  - [使用Nginx + Docker部署](./doc/deploy.md)
+  
+pandola for team
+  - [pandola for team](./doc/pandola.md)
 # License
 
 [GNU General Public License v3.0](License)

@@ -12,7 +12,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"opencatd-open/pkg/azureopenai"
 	"opencatd-open/store"
+	"os"
 	"strings"
 	"time"
 
@@ -45,8 +47,10 @@ type User struct {
 type Key struct {
 	ID        int    `json:"id,omitempty"`
 	Key       string `json:"key,omitempty"`
-	UpdatedAt string `json:"updatedAt,omitempty"`
 	Name      string `json:"name,omitempty"`
+	ApiType   string `json:"api_type,omitempty"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	UpdatedAt string `json:"updatedAt,omitempty"`
 	CreatedAt string `json:"createdAt,omitempty"`
 }
 
@@ -90,6 +94,13 @@ type ChatCompletionResponse struct {
 	} `json:"usage"`
 }
 
+func init() {
+	if openai_endpoint := os.Getenv("openai_endpoint"); openai_endpoint != "" {
+		log.Println(fmt.Sprintf("replace %s to %s", baseUrl, openai_endpoint))
+		baseUrl = openai_endpoint
+	}
+}
+
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if rootToken == "" {
@@ -106,6 +117,12 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
 			c.Abort()
 			return
+		}
+		if store.IsExistAuthCache(token[7:]) {
+			if strings.HasPrefix(c.Request.URL.Path, "/1/me") {
+				c.Next()
+				return
+			}
 		}
 		if token[7:] != rootToken {
 			u, err := store.GetUserByID(uint(1))
@@ -167,7 +184,8 @@ func Handleinit(c *gin.Context) {
 }
 
 func HandleMe(c *gin.Context) {
-	u, err := store.GetUserByID(1)
+	token := c.GetHeader("Authorization")
+	u, err := store.GetUserByToken(token[7:])
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"error": err.Error(),
@@ -183,6 +201,40 @@ func HandleMe(c *gin.Context) {
 		u.CreatedAt.Format(time.RFC3339),
 	}
 	c.JSON(http.StatusOK, resJSON)
+}
+
+func HandleMeUsage(c *gin.Context) {
+	token := c.GetHeader("Authorization")
+	fromStr := c.Query("from")
+	toStr := c.Query("to")
+	getMonthStartAndEnd := func() (start, end string) {
+		loc, _ := time.LoadLocation("Local")
+		now := time.Now().In(loc)
+
+		year, month, _ := now.Date()
+
+		startOfMonth := time.Date(year, month, 1, 0, 0, 0, 0, loc)
+		endOfMonth := startOfMonth.AddDate(0, 1, 0)
+
+		start = startOfMonth.Format("2006-01-02")
+		end = endOfMonth.Format("2006-01-02")
+		return
+	}
+	if fromStr == "" || toStr == "" {
+		fromStr, toStr = getMonthStartAndEnd()
+	}
+	user, err := store.GetUserByToken(token)
+	if err != nil {
+		c.AbortWithError(http.StatusForbidden, err)
+		return
+	}
+	usage, err := store.QueryUserUsage(to.String(user.ID), fromStr, toStr)
+	if err != nil {
+		c.AbortWithError(http.StatusForbidden, err)
+		return
+	}
+
+	c.JSON(200, usage)
 }
 
 func HandleKeys(c *gin.Context) {
@@ -210,16 +262,65 @@ func HandleUsers(c *gin.Context) {
 func HandleAddKey(c *gin.Context) {
 	var body Key
 	if err := c.BindJSON(&body); err != nil {
-		c.JSON(http.StatusOK, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"message": err.Error(),
+		}})
 		return
 	}
-	if err := store.AddKey(body.Key, body.Name); err != nil {
-		c.JSON(http.StatusOK, gin.H{"error": err.Error()})
-		return
+	body.Name = strings.ToLower(strings.TrimSpace(body.Name))
+	body.Key = strings.TrimSpace(body.Key)
+	if strings.HasPrefix(body.Name, "azure.") {
+		keynames := strings.Split(body.Name, ".")
+		if len(keynames) < 2 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+				"message": "Invalid Key Name",
+			}})
+			return
+		}
+		k := &store.Key{
+			ApiType:      "azure_openai",
+			Name:         body.Name,
+			Key:          body.Key,
+			ResourceNmae: keynames[1],
+			EndPoint:     body.Endpoint,
+		}
+		if err := store.CreateKey(k); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
+				"message": err.Error(),
+			}})
+			return
+		}
+	} else {
+		if body.ApiType == "" {
+			if err := store.AddKey("openai", body.Key, body.Name); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
+					"message": err.Error(),
+				}})
+				return
+			}
+		} else {
+			k := &store.Key{
+				ApiType:      body.ApiType,
+				Name:         body.Name,
+				Key:          body.Key,
+				ResourceNmae: azureopenai.GetResourceName(body.Endpoint),
+				EndPoint:     body.Endpoint,
+			}
+			if err := store.CreateKey(k); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
+					"message": err.Error(),
+				}})
+				return
+			}
+		}
+
 	}
+
 	k, err := store.GetKeyrByName(body.Name)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"error": err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{
+			"message": err.Error(),
+		}})
 		return
 	}
 	c.JSON(http.StatusOK, k)
@@ -244,10 +345,10 @@ func HandleAddUser(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"error": err.Error()})
 		return
 	}
-	// if len(body.Name) == 0 {
-	// 	c.JSON(http.StatusOK, gin.H{"error": "invalid user name"})
-	// 	return
-	// }
+	if len(body.Name) == 0 {
+		c.JSON(http.StatusOK, gin.H{"error": "invalid user name"})
+		return
+	}
 
 	if err := store.AddUser(body.Name, uuid.NewString()); err != nil {
 		c.JSON(http.StatusOK, gin.H{"error": err.Error()})
@@ -333,6 +434,13 @@ func HandleProy(c *gin.Context) {
 	}
 
 	if c.Request.URL.Path == "/v1/chat/completions" && localuser {
+		if store.KeysCache.ItemCount() == 0 {
+			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
+				"message": "No Api-Key Available",
+			}})
+			return
+		}
+		onekey := store.FromKeyCacheRandomItemKey()
 
 		if err := c.BindJSON(&chatreq); err != nil {
 			c.AbortWithError(http.StatusBadRequest, err)
@@ -350,12 +458,36 @@ func HandleProy(c *gin.Context) {
 		var body bytes.Buffer
 		json.NewEncoder(&body).Encode(chatreq)
 		// 创建 API 请求
-		req, err = http.NewRequest(c.Request.Method, baseUrl+c.Request.RequestURI, &body)
+		switch onekey.ApiType {
+		case "azure_openai":
+			var buildurl string
+			var apiVersion = "2023-05-15"
+			if onekey.EndPoint != "" {
+				buildurl = fmt.Sprintf("%s/openai/deployments/%s/chat/completions?api-version=%s", onekey.EndPoint, modelmap(chatreq.Model), apiVersion)
+			} else {
+				buildurl = fmt.Sprintf("https://%s.openai.azure.com/openai/deployments/%s/chat/completions?api-version=%s", onekey.ResourceNmae, modelmap(chatreq.Model), apiVersion)
+			}
+			req, err = http.NewRequest(c.Request.Method, buildurl, &body)
+			req.Header = c.Request.Header
+			req.Header.Set("api-key", onekey.Key)
+		case "openai":
+			fallthrough
+		default:
+			if onekey.EndPoint != "" {
+				req, err = http.NewRequest(c.Request.Method, onekey.EndPoint+c.Request.RequestURI, &body)
+			} else {
+				req, err = http.NewRequest(c.Request.Method, baseUrl+c.Request.RequestURI, &body)
+			}
+
+			req.Header = c.Request.Header
+			req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", onekey.Key))
+		}
 		if err != nil {
 			log.Println(err)
 			c.JSON(http.StatusOK, gin.H{"error": err.Error()})
 			return
 		}
+
 	} else {
 		req, err = http.NewRequest(c.Request.Method, baseUrl+c.Request.RequestURI, c.Request.Body)
 		if err != nil {
@@ -363,17 +495,7 @@ func HandleProy(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"error": err.Error()})
 			return
 		}
-	}
-
-	req.Header = c.Request.Header
-	if localuser {
-		if store.KeysCache.ItemCount() == 0 {
-			c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{
-				"message": "No Api-Key Available",
-			}})
-			return
-		}
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", store.FromKeyCacheRandomItem()))
+		req.Header = c.Request.Header
 	}
 
 	resp, err := client.Do(req)
@@ -411,9 +533,8 @@ func HandleProy(c *gin.Context) {
 	reader := bufio.NewReader(resp.Body)
 
 	if resp.StatusCode == 200 && localuser {
-
 		if isStream {
-			contentCh := fetchResponseContent(writer, reader)
+			contentCh := fetchResponseContent(c, reader)
 			var buffer bytes.Buffer
 			for content := range contentCh {
 				buffer.WriteString(content)
@@ -500,8 +621,8 @@ func HandleReverseProxy(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"error": "No Api-Key Available"})
 			return
 		}
-		// c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", store.FromKeyCacheRandomItem()))
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", store.FromKeyCacheRandomItem()))
+		onekey := store.FromKeyCacheRandomItemKey()
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", onekey.Key))
 	}
 
 	proxy.ServeHTTP(c.Writer, req)
@@ -526,6 +647,22 @@ func Cost(model string, promptCount, completionCount int) float64 {
 func HandleUsage(c *gin.Context) {
 	fromStr := c.Query("from")
 	toStr := c.Query("to")
+	getMonthStartAndEnd := func() (start, end string) {
+		loc, _ := time.LoadLocation("Local")
+		now := time.Now().In(loc)
+
+		year, month, _ := now.Date()
+
+		startOfMonth := time.Date(year, month, 1, 0, 0, 0, 0, loc)
+		endOfMonth := startOfMonth.AddDate(0, 1, 0)
+
+		start = startOfMonth.Format("2006-01-02")
+		end = endOfMonth.Format("2006-01-02")
+		return
+	}
+	if fromStr == "" || toStr == "" {
+		fromStr, toStr = getMonthStartAndEnd()
+	}
 
 	usage, err := store.QueryUsage(fromStr, toStr)
 	if err != nil {
@@ -536,15 +673,18 @@ func HandleUsage(c *gin.Context) {
 	c.JSON(200, usage)
 }
 
-func fetchResponseContent(w *bufio.Writer, responseBody *bufio.Reader) <-chan string {
+func fetchResponseContent(ctx *gin.Context, responseBody *bufio.Reader) <-chan string {
 	contentCh := make(chan string)
 	go func() {
 		defer close(contentCh)
 		for {
 			line, err := responseBody.ReadString('\n')
 			if err == nil {
-				w.WriteString(line)
-				w.Flush()
+				lines := strings.Split(line, "")
+				for _, word := range lines {
+					ctx.Writer.WriteString(word)
+					ctx.Writer.Flush()
+				}
 				if line == "\n" {
 					continue
 				}
@@ -625,4 +765,14 @@ func NumTokensFromStr(messages string, model string) (num_tokens int) {
 
 	num_tokens += len(tkm.Encode(messages, nil, nil))
 	return num_tokens
+}
+
+func modelmap(in string) string {
+	switch in {
+	case "gpt-3.5-turbo":
+		return "gpt-35-turbo"
+	case "gpt-4":
+		return "gpt-4"
+	}
+	return in
 }
